@@ -124,13 +124,13 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
         grid_x = grid_x.to(feature_map.device).float()
         grid_y = grid_y.to(feature_map.device).float()
 
-        # 添加偏移
-        grid_x = grid_x + dx
-        grid_y = grid_y + dy
-
         # 归一化坐标
         grid_x = 2.0 * grid_x / (H - 1) - 1.0
         grid_y = 2.0 * grid_y / (W - 1) - 1.0
+
+        # 添加偏移
+        grid_x = grid_x + dx * 2
+        grid_y = grid_y + dy * 2
 
         # 合并网格
         grid = torch.stack((grid_y, grid_x), dim=-1)
