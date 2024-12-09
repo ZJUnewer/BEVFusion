@@ -13,7 +13,7 @@ from mmdet.core import multi_apply
 from mmdet.models import DETECTORS
 from .. import builder
 from .bevf_faster_rcnn import BEVF_FasterRCNN
-
+import copy
 
 @DETECTORS.register_module()
 class BEVF_TransFusion(BEVF_FasterRCNN):
@@ -98,7 +98,21 @@ class BEVF_TransFusion(BEVF_FasterRCNN):
             coors_batch.append(coor_pad)
         coors_batch = torch.cat(coors_batch, dim=0)
         return voxels, num_points, coors_batch
-
+    
+    def obtain_history_bev(self, points_queue, imgs_queue, img_metas_list):
+        """Obtain history BEV features iteratively. To save GPU memory, gradients are not calculated.
+        """
+        prev_bev = None
+        bs, len_queue, num_cams, C, H, W = imgs_queue.shape
+        for i in range(len_queue):
+            img_metas = [each[i] for each in img_metas_list]
+            if not img_metas[0]['prev_bev_exists']:
+                prev_bev = None
+            pre_feature_dict=self.extract_feat(
+                [points_queue[0][i]], img=imgs_queue[:, i, ...], img_metas=img_metas, prev_bev=prev_bev)
+            prev_bev = pre_feature_dict['pts_feats'] 
+        return prev_bev
+        
     def forward_train(self,
                       points=None,
                       img_metas=None,
@@ -135,8 +149,17 @@ class BEVF_TransFusion(BEVF_FasterRCNN):
         Returns:
             dict: Losses of different branches.
         """
+        len_queue = img.size(1)   #img(Tensor) :  torch.Size([1, 3, 6, 3, 480, 800])
+        prev_img = img[:, :-1, ...]
+        img = img[:, -1, ...]
+        prev_points = [points[0][:-1]]
+        points = [points[0][-1]]
+        prev_img_metas = copy.deepcopy(img_metas)
+        prev_bev = self.obtain_history_bev(prev_points, prev_img, prev_img_metas)
+
+        img_metas = [each[len_queue-1] for each in img_metas]  # 仅取最后一个的img_metas
         feature_dict = self.extract_feat(
-            points, img=img, img_metas=img_metas)
+            points, img=img, img_metas=img_metas, prev_bev=prev_bev)
         img_feats = feature_dict['img_feats']
         pts_feats = feature_dict['pts_feats'] 
         depth_dist = feature_dict['depth_dist']

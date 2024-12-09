@@ -50,6 +50,8 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
         self.camera_depth_range = camera_depth_range
         self.lift = camera_stream
         self.se = se
+        self.grid = grid
+        self.pc_range = pc_range
         if camera_stream:
             self.lift_splat_shot_vis = LiftSplatShoot(lss=lss, grid=grid, inputC=imc, camC=64, 
             pc_range=pc_range, final_dim=final_dim, downsample=downsample)
@@ -65,7 +67,17 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
                 norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
                 act_cfg=dict(type='ReLU'),
                 inplace=False)
-            
+        if se:    
+            self.seblock_2 = SE_Block(lic)    
+        self.reduc_conv_2 = ConvModule(
+                lic * 2,
+                lic,
+                3,
+                padding=1,
+                conv_cfg=None,
+                norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+                act_cfg=dict(type='ReLU'),
+                inplace=False)    
         self.freeze_img = kwargs.get('freeze_img', False)
         self.init_weights(pretrained=kwargs.get('pretrained', None))
         self.freeze()
@@ -97,7 +109,38 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
             x = self.pts_neck(x)
         return x
     
-    def extract_feat(self, points, img, img_metas, gt_bboxes_3d=None):
+    def shift_feature_map(self, feature_map, shift):
+        """
+        对特征图进行偏移
+        :param feature_map: 输入特征图 (B, C, H, W)
+        :param shift: 偏移量 (dx, dy)
+        :return: 偏移后的特征图
+        """
+        B, C, H, W = feature_map.size()
+        dx, dy = shift[0,0], shift[0,1]
+
+        # 创建网格
+        grid_x, grid_y = torch.meshgrid(torch.arange(H), torch.arange(W))
+        grid_x = grid_x.to(feature_map.device).float()
+        grid_y = grid_y.to(feature_map.device).float()
+
+        # 添加偏移
+        grid_x = grid_x + dx
+        grid_y = grid_y + dy
+
+        # 归一化坐标
+        grid_x = 2.0 * grid_x / (H - 1) - 1.0
+        grid_y = 2.0 * grid_y / (W - 1) - 1.0
+
+        # 合并网格
+        grid = torch.stack((grid_y, grid_x), dim=-1)
+
+        # 使用网格采样进行偏移
+        shifted_feature_map = F.grid_sample(feature_map, grid.unsqueeze(0).repeat(B, 1, 1, 1), mode='bilinear', padding_mode='zeros', align_corners=True)
+
+        return [shifted_feature_map]
+    
+    def extract_feat(self, points, img, img_metas, gt_bboxes_3d=None, prev_bev = None):
         """Extract features from images and points."""
         img_feats = self.extract_img_feat(img, img_metas)
         pts_feats = self.extract_pts_feat(points, img_feats, img_metas)
@@ -134,6 +177,29 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
                     pts_feats = [self.reduc_conv(torch.cat([img_bev_feat, pts_feats[0]], dim=1))]
                     if self.se:
                         pts_feats = [self.seblock(pts_feats[0])]
+        # prev_bev = None
+        if prev_bev:
+            # obtain rotation angle and shift with ego motion
+            delta_x = np.array([each['can_bus'][0]
+                            for each in img_metas])
+            delta_y = np.array([each['can_bus'][1]
+                            for each in img_metas])
+            ego_angle = np.array(
+                [each['can_bus'][-2] / np.pi * 180 for each in img_metas])
+
+            translation_length = np.sqrt(delta_x ** 2 + delta_y ** 2)
+            translation_angle = np.arctan2(delta_y, delta_x) / np.pi * 180
+            bev_angle = ego_angle - translation_angle
+            shift_y = translation_length * \
+                np.cos(bev_angle / 180 * np.pi) / (self.pc_range[4] - self.pc_range[1])
+            shift_x = translation_length * \
+                np.sin(bev_angle / 180 * np.pi) / (self.pc_range[4] - self.pc_range[1])
+            shift = np.stack([shift_x, shift_y], axis=1)
+            shift = torch.Tensor(shift).to(img_feats[0].device)
+            prev_bev = self.shift_feature_map(prev_bev[0], shift)
+            pts_feats = [self.reduc_conv_2(torch.cat([prev_bev[0], pts_feats[0]], dim=1))]
+            if self.se:
+                pts_feats = [self.seblock_2(pts_feats[0])]
         return dict(
             img_feats = img_feats,
             pts_feats = pts_feats,
