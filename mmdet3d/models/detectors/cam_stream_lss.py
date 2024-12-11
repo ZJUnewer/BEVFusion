@@ -132,16 +132,18 @@ class CamEncode(nn.Module):
     def get_depth_dist(self, x, eps=1e-20):
         return x.softmax(dim=1)
 
-    def get_depth_feat(self, x):
+    def get_depth_feat(self, x, depth_lidar=None, depth_mask=None):
         # Depth
         x = self.depthnet(x)
 
         depth = self.get_depth_dist(x[:, :self.D])
+        if depth_lidar is not None:
+            depth = depth * (1 - depth_mask) + depth_lidar * depth_mask
         new_x = depth.unsqueeze(1) * x[:, self.D:(self.D + self.C)].unsqueeze(2)
         return depth, new_x
 
-    def forward(self, x):
-        depth, x = self.get_depth_feat(x)
+    def forward(self, x, depth_lidar=None, depth_mask=None):
+        depth, x = self.get_depth_feat(x, depth_lidar, depth_mask)
 
         return x, depth
 
@@ -257,13 +259,13 @@ class LiftSplatShoot(nn.Module):
                 points += extra_trans.view(B, N, 1, 1, 1, 3)
         return points
 
-    def get_cam_feats(self, x):
+    def get_cam_feats(self, x, depth_lidar=None, depth_mask=None):
         """Return B x N x D x H/downsample x W/downsample x C
         """
         B, N, C, H, W = x.shape
 
         x = x.view(B * N, C, H, W)
-        x, depth = self.camencode(x)
+        x, depth = self.camencode(x, depth_lidar, depth_mask)
         x = x.view(B, N, self.camC, self.D, H, W)
         x = x.permute(0, 1, 3, 4, 5, 2)
         depth = depth.view(B, N, self.D, H, W)
@@ -309,9 +311,9 @@ class LiftSplatShoot(nn.Module):
 
         return final
 
-    def get_voxels(self, x, rots=None, trans=None, post_rots=None, post_trans=None,extra_rots=None,extra_trans=None):
+    def get_voxels(self, x, rots=None, trans=None, post_rots=None, post_trans=None,extra_rots=None,extra_trans=None, depth_lidar=None, depth_mask=None):
         geom = self.get_geometry(rots, trans, post_rots, post_trans,extra_rots,extra_trans)
-        x, depth = self.get_cam_feats(x)
+        x, depth = self.get_cam_feats(x, depth_lidar, depth_mask)
         x = self.voxel_pooling(geom, x)
         return x, depth
 
@@ -321,8 +323,8 @@ class LiftSplatShoot(nn.Module):
         bev = bev.permute((0,1,3,2))
         return bev
 
-    def forward(self, x, rots, trans, lidar2img_rt=None, img_metas=None, post_rots=None, post_trans=None, extra_rots=None,extra_trans=None):
-        x, depth = self.get_voxels(x, rots, trans, post_rots, post_trans,extra_rots,extra_trans) # [B, C, H, W, L]
+    def forward(self, x, rots, trans, lidar2img_rt=None, img_metas=None, post_rots=None, post_trans=None, extra_rots=None,extra_trans=None, depth_lidar=None, depth_mask=None):
+        x, depth = self.get_voxels(x, rots, trans, post_rots, post_trans,extra_rots,extra_trans, depth_lidar, depth_mask) # [B, C, H, W, L]
         bev = self.s2c(x)
         x = self.bevencode(bev)
         return x, depth

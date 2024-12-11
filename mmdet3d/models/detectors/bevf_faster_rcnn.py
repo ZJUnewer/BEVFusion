@@ -79,9 +79,9 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
             if self.with_img_neck:
                 for param in self.img_neck.parameters():
                     param.requires_grad = False
-            if self.lift:
-                for param in self.lift_splat_shot_vis.parameters():
-                    param.requires_grad = False
+            # if self.lift:
+            #     for param in self.lift_splat_shot_vis.parameters():
+            #         param.requires_grad = False
 
 
     def extract_pts_feat(self, pts, img_feats, img_metas):
@@ -193,9 +193,14 @@ class BEVF_FasterRCNN(MVXFasterRCNN):
                             if img_depth < self.camera_depth_range[0] or img_depth > self.camera_depth_range[1]:
                                 continue
                             depth[b, c, 0, int((img_depth-self.camera_depth_range[0]) / self.camera_depth_range[2]), coord[0], coord[1]] += 1 / len(img_depths)  # 稀疏的深度约束图（用于计算loss）
-            #TODO, 已完成depth 作为离散分布真值的计算  depth：torch.size(B, N, D, H, W)
-            img_bev_feat, depth_dist = self.lift_splat_shot_vis(img_feats_view, rots, trans, lidar2img_rt=lidar2img_rt, img_metas=img_metas)
-
+            # TODO, 已完成depth 作为离散分布真值的计算  depth：torch.size(B, N, D, H, W)
+            # TODO, 仅在融合模块加入点云投影深度信息
+            if self.lc_fusion:
+                depth = depth.view(-1, dx, H, W)
+                depth_mask = depth_mask.view(-1, 1, H, W)
+                img_bev_feat, depth_dist = self.lift_splat_shot_vis(img_feats_view, rots, trans, lidar2img_rt=lidar2img_rt, img_metas=img_metas, depth_lidar=depth, depth_mask=depth_mask)
+            else:
+                img_bev_feat, depth_dist = self.lift_splat_shot_vis(img_feats_view, rots, trans, lidar2img_rt=lidar2img_rt, img_metas=img_metas)
             # print(img_bev_feat.shape, pts_feats[-1].shape)
             if pts_feats is None:
                 pts_feats = [img_bev_feat] ####cam stream only
